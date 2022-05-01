@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 
+ - AWS::Serverless-2016-10-31
+Description: >
+  zeppelin-serverless
+
+  Sample SAM Template for zeppelin-serverless
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 128
+    Architectures: 
+      - arm64
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: zeppelin
+  
+  DefaultVpcId:
+    Type: String
+    Default: vpc-6ad87513
+  
+  DefaultVpcCidr:
+    Type: String
+    Default: 172.31.0.0/16
+
+  DefaultSubnetsIds:
+    Type: String
+    Default: "subnet-1421cf5f,subnet-79809f1f,subnet-ef623ab5"
+  
+  ContainerPort:
+    Type: String  
+    Default: "8080"
+
+  ContainerCPU:
+    Type: String  
+    Default: "2048"
+
+  MemorySoftLimit: 
+    Type: String  
+    Default: "2048"
+
+  MemoryHardLimit:
+    Type: String  
+    Default: "4096"
+  
+  ZeppelinPersistNotebookPath:
+    Type: String  
+    Default: "/opt/zeppelin/notebook/ElasticFileSystem/"
+
+Resources:
+  ZeppelinSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      VpcId: !Ref DefaultVpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          CidrIp: 0.0.0.0/0
+          Description: ZEPPELIN
+        - IpProtocol: tcp
+          FromPort: 4040
+          ToPort: 4040
+          CidrIp: 0.0.0.0/0
+          Description: SPARKUI
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: !Ref DefaultVpcCidr
+          Description: NFS
+
+
+  ZeppelinLambdaRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+
+  ZeppelinLambdaRolePolicies: 
+    Type: "AWS::IAM::Policy"
+    Properties: 
+      PolicyName: "root"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Action: 
+             - ecs:RunTask
+            Resource: 
+             - !Ref ZeppelinTaskDefinition
+          - Effect: "Allow"
+            Action: 
+             - ecs:ExecuteCommand
+             - ecs:StopTask
+            Resource: 
+             - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${Cluster}"
+             - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/${Cluster}/*"
+          - Effect: "Allow"
+            Action: 
+             - ecs:DescribeTasks
+            Resource: 
+             - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/*"
+          - Effect: "Allow"
+            Action: 
+             - ecs:ListTasks
+            Resource: 
+             - "*"
+          - Effect: "Allow"
+            Action: 
+             - iam:PassRole
+            Resource: 
+             - !GetAtt ZeppelinTaskRole.Arn
+      Roles: 
+        - !Ref "ZeppelinLambdaRole"
+
+  ZeppelinApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref ServiceName
+      # Auth:
+      #   DefaultAuthorizer: AWS_IAM
+
+  ZeppelinFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: manager/
+      Handler: starter.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt ZeppelinLambdaRole.Arn
+      Environment:
+        Variables:
+          CLUSTER: !Ref Cluster
+          TASKDEF: !Ref ZeppelinTaskDefinition
+          SERNAME: !Ref ServiceName
+          DEFAULT_SUBNETS: !Ref DefaultSubnetsIds
+          SECURITY_GROUP_ID: !Ref ZeppelinSecurityGroup
+          CONTAINER_PORT: !Ref ContainerPort
+      Events:
+        Zeppelin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ZeppelinApi
+            Path: /
+            Method: get
+
+  ShutdownSnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt ShutdownFunction.Arn    
+  ShutdownFunctionPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref ShutdownFunction
+      Principal: sns.amazonaws.com
+  ShutdownFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: manager/
+      Handler: stopper.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt ZeppelinLambdaRole.Arn
+      Environment:
+        Variables:
+          CLUSTER: !Ref Cluster
+          TASKDEF: !Ref ZeppelinTaskDefinition
+          SERNAME: !Ref ServiceName
+          DEFAULT_SUBNETS: !Ref DefaultSubnetsIds
+          SECURITY_GROUP_ID: !Ref ZeppelinSecurityGroup
+          CONTAINER_PORT: !Ref ContainerPort
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Join ['', [!Ref ServiceName, Cluster]]
+
+  ZeppelinLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub "/ecs/fargate-${ServiceName}"
+      RetentionInDays: 1
+
+  ZeppelinTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities:
+        - "FARGATE"
+      Cpu: !Ref ContainerCPU
+      Memory: !Ref MemoryHardLimit
+      NetworkMode: "awsvpc"
+      TaskRoleArn: !GetAtt ZeppelinTaskRole.Arn
+      ExecutionRoleArn: !GetAtt ZeppelinTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Image: "apache/zeppelin:0.10.0"
+          EntryPoint: 
+            - /bin/bash
+            - -c
+            - |
+              cp conf/shiro.ini.template conf/shiro.ini 
+              /usr/bin/tini -- bin/zeppelin.sh
+          Command: ["echo", "done!"]
+          MemoryReservation: !Ref MemorySoftLimit
+          Memory: !Ref MemoryHardLimit
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+            - ContainerPort: 4040
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ZeppelinLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Sub 'ecs-${ServiceName}-awsvpc'
+          MountPoints:
+            - ContainerPath: !Ref ZeppelinPersistNotebookPath
+              SourceVolume: !Sub "${ServiceName}"
+              ReadOnly: false
+      Volumes:
+        - Name: !Sub "${ServiceName}"
+          EFSVolumeConfiguration:
+            AuthorizationConfig: 
+              IAM: ENABLED
+              AccessPointId: !Ref AccessPoint
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
+
+  AccessPoint:
+    Type: 'AWS::EFS::AccessPoint'
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser:
+        Uid: "500"
+        Gid: "500"
+        SecondaryGids:
+          - "2000"
+      RootDirectory:
+        CreationInfo:
+          OwnerGid: "500"
+          OwnerUid: "500"
+          Permissions: "0777"
+        Path: !Sub "/${ServiceName}"
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      FileSystemTags:
+      - Key: ServiceName
+        Value: !Ref ServiceName
+
+  MountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId:
+        Ref: FileSystem
+      SubnetId: !Select [ 0, !Split [ ",", !Ref DefaultSubnetsIds ] ]
+      SecurityGroups:
+      - Ref: ZeppelinSecurityGroup
+  MountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId:
+        Ref: FileSystem
+      SubnetId: !Select [ 1, !Split [ ",", !Ref DefaultSubnetsIds ] ]
+      SecurityGroups:
+      - Ref: ZeppelinSecurityGroup
+  MountTarget3:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId:
+        Ref: FileSystem
+      SubnetId: !Select [ 2, !Split [ ",", !Ref DefaultSubnetsIds ] ]
+      SecurityGroups:
+      - Ref: ZeppelinSecurityGroup
+
+  ActivityMetricFilter: 
+    Type: AWS::Logs::MetricFilter
+    Properties: 
+      LogGroupName: !Ref ZeppelinLogGroup
+      FilterPattern: "INFO"
+      MetricTransformations: 
+        - 
+          MetricValue: "1"
+          MetricNamespace: !Sub "${ServiceName}/Actions"
+          MetricName: "ActionsCount"
+
+  ZeppelinActionsCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ZeppelinActionsCountAlarm
+      MetricName: ActionsCount
+      Namespace: !Sub "${ServiceName}/Actions"
+      Statistic: SampleCount
+      Period: '300'
+      EvaluationPeriods: '6'
+      TreatMissingData: breaching
+      Threshold: '1'
+      ComparisonOperator: LessThanOrEqualToThreshold
+      AlarmActions:
+      - !Ref ShutdownSnsTopic
+
+  ZeppelinTaskRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ecs-tasks.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+
+  ZeppelinTaskRolePolicies: 
+    Type: "AWS::IAM::Policy"
+    Properties: 
+      PolicyName: "root"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Action: 
+             - ssmmessages:CreateControlChannel
+             - ssmmessages:CreateDataChannel
+             - ssmmessages:OpenControlChannel
+             - ssmmessages:OpenDataChannel
+            Resource: "*"
+          - Effect: "Allow"
+            Action: 
+             - logs:CreateLogStream
+             - logs:CreateLogGroup
+             - logs:PutLogEvents
+            Resource: 
+             - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ZeppelinLogGroup}
+             - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ZeppelinLogGroup}:log-stream:*
+          - Effect: "Allow"
+            Action: 
+             - cloudwatch:PutMetricData
+            Resource: "*"
+          - Action:
+              - elasticfilesystem:DescribeMountTargets
+              - elasticfilesystem:DescribeFileSystems
+              - elasticfilesystem:ClientWrite
+            Effect: Allow
+            Resource:
+              - !GetAtt FileSystem.Arn
+      Roles: 
+        - Ref: "ZeppelinTaskRole"
+
+Outputs:
+   ZeppelinApi:
+     Description: "API Gateway endpoint URL for Prod stage for Hello World function"
+     Value: !Sub "https://${ZeppelinApi}.execute-api.${AWS::Region}.amazonaws.com/${ServiceName}/"

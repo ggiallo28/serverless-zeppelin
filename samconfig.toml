@@ -1,0 +1,11 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "zeppelin-serverless"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1u0a2qy1ch7w7"
+s3_prefix = "zeppelin-serverless"
+region = "eu-west-1"
+capabilities = "CAPABILITY_IAM"
+image_repositories = []
+parameter_overrides = "ServiceName=\"zeppelin\" DefaultVpcId=\"vpc-6ad87513\" DefaultVpcCidr=\"172.31.0.0/16\" DefaultSubnetsIds=\"subnet-1421cf5f,subnet-79809f1f,subnet-ef623ab5\" ContainerPort=\"8080\" ContainerCPU=\"2048\" MemorySoftLimit=\"2048\" MemoryHardLimit=\"4096\" ZeppelinPersistNotebookPath=\"/opt/zeppelin/notebook/ElasticFileSystem/\""

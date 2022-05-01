@@ -1,0 +1,41 @@
+{
+    "Statement": [
+        {
+            "Action": [
+                "ecs:RunTask"
+            ],
+            "Resource": [
+                "arn:aws:ecs:eu-west-1:669335340622:task-definition/zeppelin-serverless-ZeppelinTaskDefinition-CfRP3n75lYvg:1"
+            ],
+            "Effect": "Allow"
+        },
+        {
+            "Action": [
+                "ecs:ExecuteCommand"
+            ],
+            "Resource": [
+                "arn:aws:ecs:eu-west-1:669335340622:cluster/ZeppelinCluster",
+                "arn:aws:ecs:eu-west-1:669335340622:task/ZeppelinCluster/*"
+            ],
+            "Effect": "Allow"
+        },
+        {
+            "Action": [
+                "ecs:DescribeTasks"
+            ],
+            "Resource": [
+                "arn:aws:ecs:eu-west-1:669335340622:task/*"
+            ],
+            "Effect": "Allow"
+        },
+        {
+            "Action": [
+                "ecs:ListTasks"
+            ],
+            "Resource": [
+                "*"
+            ],
+            "Effect": "Allow"
+        }
+    ]
+}
